@@ -5,6 +5,6 @@ pub struct QueueConfig {
     pub on_full: FullPolicy,
 }
 
-pub struct FsyncPolicy { }
+pub struct FsyncPolicy {}
 
-pub struct FullPolicy { }
+pub struct FullPolicy {}

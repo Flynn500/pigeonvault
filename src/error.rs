@@ -1,1 +1,1 @@
-pub struct EnqueueError { }
+pub struct EnqueueError {}

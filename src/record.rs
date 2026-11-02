@@ -1,9 +1,7 @@
-/* 
+/*
                     Record encoding
-
 | len: u32 | seq: u64 | crc: u32 | payload: len bytes  |
    4 bytes    8 bytes    4 bytes     variable
-
 */
 
 use crc32fast::Hasher;
@@ -21,7 +19,23 @@ pub enum DecodeError {
     Truncated,
     TooLarge(u32),
     BadChecksum,
+    SeqMismatch { expected: SeqNo, found: SeqNo },
 }
+
+impl std::fmt::Display for DecodeError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Truncated => write!(f, "record truncated"),
+            Self::TooLarge(len) => write!(f, "record length {len} exceeds MAX_PAYLOAD"),
+            Self::BadChecksum => write!(f, "record checksum mismatch"),
+            Self::SeqMismatch { expected, found } => {
+                write!(f, "expected seq {expected}, found {found}")
+            }
+        }
+    }
+}
+
+impl std::error::Error for DecodeError {}
 
 #[derive(Debug)]
 pub enum EncodeError {
@@ -81,7 +95,53 @@ impl Record {
             return Err(DecodeError::BadChecksum);
         }
 
-        Ok((Record { seq, payload: payload.to_vec() }, frame_len))
+        Ok((
+            Record {
+                seq,
+                payload: payload.to_vec(),
+            },
+            frame_len,
+        ))
+    }
+}
+
+#[derive(Debug)]
+pub struct ScanResult {
+    pub count: u64,
+    pub next_seq: SeqNo,
+    /// Bytes of valid records, relative to the start of the record area.
+    pub valid_len: usize,
+    /// Why the scan stopped. `None` means it consumed every byte.
+    pub tail: Option<DecodeError>,
+}
+
+pub fn scan_records(records: &[u8], base_seq: SeqNo) -> ScanResult {
+    let mut pos = 0;
+    let mut expected = base_seq;
+    let tail = loop {
+        if pos == records.len() {
+            break None;
+        }
+        match Record::decode(&records[pos..]) {
+            Ok((rec, n)) if rec.seq == expected => {
+                pos += n;
+                expected += 1;
+            }
+            Ok((rec, _)) => {
+                break Some(DecodeError::SeqMismatch {
+                    expected,
+                    found: rec.seq,
+                });
+            }
+            Err(e) => break Some(e),
+        }
+    };
+
+    ScanResult {
+        count: expected - base_seq,
+        next_seq: expected,
+        valid_len: pos,
+        tail,
     }
 }
 
@@ -91,11 +151,7 @@ mod tests {
 
     #[test]
     fn round_trip_preserves_record() {
-        let cases: &[&[u8]] = &[
-            b"",
-            b"hello mqtt",
-            &[0xFF; 1024],
-        ];
+        let cases: &[&[u8]] = &[b"", b"hello mqtt", &[0xFF; 1024]];
 
         for &payload in cases {
             let original = Record {
